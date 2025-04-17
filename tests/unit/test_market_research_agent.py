@@ -118,7 +118,7 @@ def test_store_data(mock_engine, agent):
 @patch("agents.market_research.market_research_agent.MarketResearchAgent.fetch_ohlcv")
 @patch("agents.market_research.market_research_agent.MarketResearchAgent.filter_assets")
 @patch("agents.market_research.market_research_agent.MarketResearchAgent.store_data")
-@patch("agents.market_research.market_research_agent.RedisPubSub.publish")
+@patch("agents.market_research.market_research_agent.RedisStream.publish")
 def test_run(mock_publish, mock_store, mock_filter, mock_fetch_ohlcv, mock_fetch_assets, agent):
     """Test the run method."""
     mock_fetch_assets.return_value = ["bitcoin", "ethereum"]
@@ -133,4 +133,4 @@ def test_run(mock_publish, mock_store, mock_filter, mock_fetch_ohlcv, mock_fetch
     mock_fetch_ohlcv.assert_called()
     mock_filter.assert_called_once()
     mock_store.assert_called_once_with("bitcoin", mock.ANY)
-    mock_publish.assert_called_once_with(agent.channel, "Asset bitcoin passed screening.")
+    mock_publish.assert_called_once_with(agent.market_research_signals_channel, {"filtered_assets": '["bitcoin"]'})

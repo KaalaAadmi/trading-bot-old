@@ -2,7 +2,7 @@ import sys
 import os
 import time
 import threading
-from core.redis_bus.redis_pubsub import RedisPubSub
+from core.redis_bus.redis_stream import RedisStream
 from unittest.mock import MagicMock
 
 # Dynamically add the project root directory to the Python path
@@ -15,25 +15,25 @@ def message_handler(channel, message):
     global received_messages
     received_messages[channel] = message  # Store the message for the channel
 
-def test_redis_pubsub():
+def test_redis_stream():
     """Test the Redis Pub/Sub functionality with all agent-specific channels."""
     # Initialize Redis Pub/Sub
-    pubsub = RedisPubSub()
+    stream = RedisStream()
 
     # Mock the subscribe and publish methods
-    pubsub.subscribe = MagicMock()
-    pubsub.publish = MagicMock()
+    stream.subscribe = MagicMock()
+    stream.publish = MagicMock()
 
     # Test all channels defined in settings.yaml
     channels = [
-        pubsub.get_channel("market_research"),
-        pubsub.get_channel("technical_analysis"),
-        pubsub.get_channel("risk_manager"),
-        pubsub.get_channel("portfolio_manager"),
-        pubsub.get_channel("fvg_tracker"),
-        pubsub.get_channel("journaling"),
-        pubsub.get_channel("performance"),
-        pubsub.get_channel("notification"),
+        stream.get_channel("market_research"),
+        stream.get_channel("technical_analysis"),
+        stream.get_channel("risk_manager"),
+        stream.get_channel("portfolio_manager"),
+        stream.get_channel("fvg_tracker"),
+        stream.get_channel("journaling"),
+        stream.get_channel("performance"),
+        stream.get_channel("notification"),
     ]
 
     for channel in channels:
@@ -41,11 +41,11 @@ def test_redis_pubsub():
         assert channel is not None, f"Channel for {channel} is None"
 
         # Simulate subscribing to the channel
-        pubsub.subscribe(channel, lambda message: message_handler(channel, message))
+        stream.subscribe(channel, lambda message: message_handler(channel, message))
 
         # Simulate publishing a test message to the channel
         test_message = f"Test message for {channel}"
-        pubsub.publish(channel, test_message)
+        stream.publish(channel, test_message)
 
         # Simulate the callback being called
         message_handler(channel, test_message)
@@ -58,4 +58,4 @@ def test_redis_pubsub():
 
 if __name__ == "__main__":
     # Run the test manually
-    test_redis_pubsub()
+    test_redis_stream()

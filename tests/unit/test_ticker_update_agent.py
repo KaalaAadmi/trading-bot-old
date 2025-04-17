@@ -43,7 +43,8 @@ def test_fetch_coin50_tickers(mock_get, agent):
 @patch("os.makedirs")
 @patch("agents.ticker_updater.ticker_updater_agent.TickerUpdaterAgent.fetch_sp500_tickers")
 @patch("agents.ticker_updater.ticker_updater_agent.TickerUpdaterAgent.fetch_coin50_tickers")
-def test_update_tickers(mock_fetch_coin50, mock_fetch_sp500, mock_makedirs, mock_open, agent):
+@patch("agents.ticker_updater.ticker_updater_agent.RedisStream.publish")
+def test_update_tickers(mock_publish, mock_fetch_coin50, mock_fetch_sp500, mock_makedirs, mock_open, agent):
     """Test the update_tickers method."""
     mock_fetch_sp500.return_value = ["AAPL", "MSFT"]
     mock_fetch_coin50.return_value = ["bitcoin", "ethereum"]
@@ -59,3 +60,6 @@ def test_update_tickers(mock_fetch_coin50, mock_fetch_sp500, mock_makedirs, mock
         "coin50": ["bitcoin", "ethereum"]
     }
     assert json.loads(written_data) == expected_data
+
+    # Verify that the message was published to the Redis Stream
+    mock_publish.assert_called_once_with(agent.channel, {"message": "Ticker update completed."})

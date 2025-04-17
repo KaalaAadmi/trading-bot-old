@@ -6,7 +6,7 @@ import yfinance as yf
 import pandas as pd
 from io import StringIO
 from core.config.config_loader import load_settings
-from core.redis_bus.redis_pubsub import RedisPubSub
+from core.redis_bus.redis_stream import RedisStream
 
 # Initialize logger
 logger = logging.getLogger("agents.ticker_updater")
@@ -15,9 +15,9 @@ class TickerUpdaterAgent:
     def __init__(self, output_path=None):
         settings = load_settings()
         self.output_path = output_path or settings["tickers"]["file_path"]
-        self.pubsub = RedisPubSub()  # Initialize Redis Pub/Sub
-        self.channel = self.pubsub.get_channel("ticker_updater")  # Fetch channel name from settings.yaml
-        logger.info("Subscribed to channel '%s' for sending ticker updates completion status.", self.channel)
+        self.redis_stream = RedisStream()  # Initialize Redis Streams
+        self.channel = self.redis_stream.get_channel("ticker_updater")  # Fetch stream name from settings.yaml
+        logger.info("Initialized TickerUpdaterAgent with stream '%s'.", self.channel)
         
     def fetch_sp500_tickers(self):
         """Fetch the S&P500 ticker list from Wikipedia."""
@@ -65,7 +65,7 @@ class TickerUpdaterAgent:
             logger.info("Updated tickers and saved to %s.", self.output_path)
 
             # Publish a message to notify completion
-            self.pubsub.publish(self.channel, "Ticker update completed.")
-            logger.info("Published completion message to channel '%s'.", self.channel)
+            self.redis_stream.publish(self.channel, {"message": "Ticker update completed."})
+            logger.info("Published completion message to stream '%s'.", self.channel)
         except Exception as e:
             logger.error("Failed to update tickers: %s", str(e))

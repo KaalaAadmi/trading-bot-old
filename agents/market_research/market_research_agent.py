@@ -1,12 +1,13 @@
 import logging
 import pandas as pd
 import requests
-from core.redis_bus.redis_pubsub import RedisPubSub
+from core.redis_bus.redis_stream import RedisStream
 from core.config.config_loader import load_settings
 from sqlalchemy import create_engine
 import os
 import json
 import yfinance as yf
+import time
 
 # Initialize logger
 logger = logging.getLogger("agents.market_research")
@@ -19,10 +20,10 @@ class MarketResearchAgent:
         else:
             self.settings = load_settings()
 
-        # Initialize Redis Pub/Sub
-        self.pubsub = RedisPubSub()
-        self.ticker_updates_channel = self.pubsub.get_channel("ticker_updater")  # Subscribe to ticker_updates_channel
-        self.market_research_signals_channel = self.pubsub.get_channel("market_research")  # Publish to market_research_signals
+        # Initialize Redis Streams
+        self.redis_stream = RedisStream()
+        self.ticker_updates_channel = self.redis_stream.get_channel("ticker_updater")  # Subscribe to ticker_updates_channel
+        self.market_research_signals_channel = self.redis_stream.get_channel("market_research")  # Publish to market_research_signals
 
         # Initialize database connection
         db_config = self.settings["database"]
@@ -31,13 +32,14 @@ class MarketResearchAgent:
         )
 
     def subscribe_to_ticker_updates(self):
-        """Subscribe to the ticker update completion channel."""
-        logger.info("Subscribing to channel '%s' for ticker updates.", self.ticker_updates_channel)
-        self.pubsub.subscribe(self.ticker_updates_channel, self.run_on_message)
-
+        """Subscribe to the ticker update completion stream."""
+        logger.info("Subscribing to stream '%s' for ticker updates.", self.ticker_updates_channel)
+        self.redis_stream.subscribe(self.ticker_updates_channel, self.run_on_message)
+        time.sleep(1)  # Ensure the subscription is active before messages are published
+        
     def run_on_message(self, message):
         """Run the Market Research Agent when a message is received."""
-        logger.info("Received message on channel '%s': %s", self.ticker_updates_channel, message)
+        logger.info("Received message on stream '%s': %s", self.ticker_updates_channel, message)
         self.run()
 
     def fetch_assets(self):
@@ -188,9 +190,9 @@ class MarketResearchAgent:
         }
         filtered_assets = self.filter_assets(ohlcv_data, coin50, sp500)
         
-        # Publish the filtered assets as a list to the market_research_signals channel
-        self.pubsub.publish(self.market_research_signals_channel, json.dumps(filtered_assets))
-        logger.info("Published filtered assets to channel '%s': %s", self.market_research_signals_channel, filtered_assets)
+        # Publish the filtered assets as a list to the market_research_signals stream
+        self.redis_stream.publish(self.market_research_signals_channel, {"filtered_assets": json.dumps(filtered_assets)})
+        logger.info("Published filtered assets to stream '%s': %s", self.market_research_signals_channel, filtered_assets)
         
         logger.info("Market Research Agent processing completed. Filtered %d assets for next steps.", len(filtered_assets))
 
