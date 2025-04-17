@@ -130,15 +130,16 @@ Currently, agents are rule-based but designed in a way that future ML/AI modules
 
 ```mermaid
 graph TD
-A[Market Research Agent] --> B[Market Data Stored in TimescaleDB]
-B --> C[Technical Analysis Agent]
-C --> D[FVG & Liquidity Tracker]
-D --> E[Risk Manager Agent]
-E --> F[Portfolio Manager Agent]
-F --> G[Journaling Agent]
-G --> H[Performance Agent]
-H --> I[Streamlit Dashboard]
-H --> J[Prometheus Exporter]
+A[update_ticker_agent] -->|Fetches fresh universe| B[tickers.json]
+B --> C[Market Research Agent] -->|Market Data Stored in TimescaleDB| D[Data Collector Agent]
+D --> E[Technical Analysis Agent]
+E --> F[FVG & Liquidity Tracker]
+F --> G[Risk Manager Agent]
+G --> H[Portfolio Manager Agent]
+H --> I[Journaling Agent]
+I --> J[Performance Agent]
+J --> K[Streamlit Dashboard]
+J --> L[Prometheus Exporter]
 ```
 
 ---
@@ -202,10 +203,11 @@ agentic-trading-bot/
 - Identifies candidates with unmitigated FVGs and imbalance
 - **Immediately stores raw OHLCV data** in the database to reduce latency
 
-### 2. 📊 Market Data Collector Agent
-
-- Cleans, resamples and fills missing market data
-- Can be bypassed if Market Research Agent stores raw data
+- **Market Data Collector Agent**:
+  - Fetches real-time OHLCV data for all tracked assets (stocks and cryptocurrencies).
+  - Appends the new data to the `ohlcv_data` table in TimescaleDB.
+  - Runs at regular intervals (e.g., every 5 minutes) using APScheduler.
+  - Handles API rate limits and errors gracefully.
 
 ### 3. 📉 Technical Analysis Agent
 
@@ -273,17 +275,17 @@ Database Engine: PostgreSQL (TimescaleDB extension)
 
 - [x] Set up TimescaleDB (via Docker)
 
-- [ ] Set up Redis (Pub/Sub)
+- [x] Set up Redis (Pub/Sub)
 
-- [ ] Set up Prometheus + Grafana
+- [x] Set up Prometheus + Grafana
 
-- [ ] Create shared .env and settings.yaml
+- [x] Create shared .env and settings.yaml
 
-- [ ] Define Docker Compose for multi-agent architecture
+- [x] Define Docker Compose for multi-agent architecture
 
 ### 🧠 Core Modules
 
-- [ ] Implement Redis Pub/Sub wrapper for agent communication
+- [x] Implement Redis Pub/Sub wrapper for agent communication
 
 - [ ] Build API layer (FastAPI)
 

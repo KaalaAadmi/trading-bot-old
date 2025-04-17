@@ -1,0 +1,59 @@
+# Database Configuration
+database:
+  user: ${POSTGRES_USER}
+  password: ${POSTGRES_PASSWORD}
+  db: ${POSTGRES_DB}
+  host: ${POSTGRES_HOST}
+  port: ${POSTGRES_PORT}
+
+# Redis Configuration
+redis:
+  host: ${REDIS_HOST}
+  port: ${REDIS_PORT}
+  db: ${REDIS_DB}
+  channels:
+    ticker_updater: "ticker_updates_channel"
+    market_research: "market_research_signals"
+    technical_analysis: "technical_analysis_signals"
+    risk_manager: "risk_manager_updates"
+    portfolio_manager: "portfolio_manager_signals"
+    fvg_tracker: "fvg_tracker_updates"
+    journaling: "journaling_updates"
+    performance: "performance_metrics"
+    notification: "notification_alerts"
+
+# Prometheus Configuration
+prometheus:
+  host: ${PROMETHEUS_HOST}
+  port: ${PROMETHEUS_PORT}
+
+# Grafana Configuration
+grafana:
+  host: ${GRAFANA_HOST}
+  port: ${GRAFANA_PORT}
+
+# Logging Configuration
+logging:
+  level: ${LOG_LEVEL}
+
+# Other Configuration
+agents:
+  market_research:
+    enabled: true
+    volume_threshold:
+      stocks: 1000000 # 1M shares/day
+      crypto: 10000000 # $10M/day
+    volatility_threshold: 0.02 # 2% daily volatility
+    price_change_threshold: 0.02 # ±2% price change in the last 5 days
+    min_price:
+      stocks: 1 # $1
+      crypto: 0.05 # $0.05
+  technical_analysis:
+    enabled: true
+  risk_manager:
+    enabled: true
+  portfolio_manager:
+    enabled: true
+
+tickers:
+  file_path: "data/tickers.json"

@@ -1,6 +1,23 @@
 services:
+  # timescaledb:
+  #   build:
+  #     context: .
+  #     dockerfile: ./Dockerfiles/timescaledb
+  #   container_name: timescaledb
+  #   networks:
+  #     - trading_bot
+  #   ports:
+  #     - "5432:5432"
+  #   environment:
+  #     POSTGRES_USER: bot_user
+  #     POSTGRES_PASSWORD: bot_password
+  #     POSTGRES_DB: trading_bot
+  #   volumes:
+  #     - timescale_data:/var/lib/postgresql/data
+  #     - ./init_timescale.sql:/docker-entrypoint-initdb.d/init_timescale.sql
+  #   restart: always
   timescaledb:
-    image: timescaledev/timescaledb-ha:pg12-latest
+    image: timescale/timescaledb:latest-pg14
     container_name: timescaledb
     networks:
       - trading_bot
@@ -32,7 +49,11 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - ../monitoring/prometheus.yaml:/etc/prometheus/prometheus.yml
+      - ${PWD}/../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml" # Path to the config file
+      - "--storage.tsdb.retention.time=90d" # Retain metrics for 90 days
+      - "--storage.tsdb.path=/prometheus" # Path to store metrics
     restart: always
 
   grafana:
@@ -60,24 +81,15 @@ services:
       - REDIS_ADDR=redis:6379
     restart: always
 
-  promscale:
-    image: timescale/promscale:latest
-    container_name: promscale
+  postgres_exporter:
+    image: prometheuscommunity/postgres-exporter
+    container_name: postgres_exporter
     networks:
       - trading_bot
     ports:
-      - "9201:9201"
-    depends_on:
-      - timescaledb
-    # environment:
-    #   - TS_PROM_DB_HOST=timescaledb
-    #   - TS_PROM_DB_PORT=5432
-    #   - TS_PROM_DB_USER=bot_user
-    #   - TS_PROM_DB_PASSWORD=bot_password
-    #   - TS_PROM_DB_NAME=trading_bot
+      - "9187:9187"
     environment:
-      - PROMSCALE_DB_URI=postgres://bot_user:bot_password@timescaledb:5432/trading_bot?sslmode=disable
-
+      DATA_SOURCE_NAME: "postgresql://bot_user:bot_password@timescaledb:5432/trading_bot?sslmode=disable"
     restart: always
 
 volumes:

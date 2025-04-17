@@ -41,8 +41,16 @@ This bot implements a fully automated **Inverse Fair Value Gap (FVG) and Liquidi
 
 ### 2. 📊 Market Data Collector Agent
 
-- Cleans, resamples and fills missing market data
-- Can be bypassed if Market Research Agent stores raw data
+- **Goal**: Fetch real-time OHLCV data for all tracked assets (stocks and cryptocurrencies) at regular intervals.
+- **Responsibilities**:
+  - Fetch the latest OHLCV data for all tracked assets (e.g., S&P500 tickers and Coin50 tickers).
+  - Append the new data to the `ohlcv_data` table in TimescaleDB.
+  - Run at regular intervals (e.g., every 5 minutes) using APScheduler.
+  - Handle API rate limits and errors gracefully.
+- **Tools**:
+  - `yfinance` for stocks and cryptocurrencies.
+  - TimescaleDB for storing OHLCV data.
+  - APScheduler for scheduling periodic tasks.
 
 ### 3. 📉 Technical Analysis Agent
 
