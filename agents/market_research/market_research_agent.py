@@ -34,8 +34,12 @@ class MarketResearchAgent:
     def subscribe_to_ticker_updates(self):
         """Subscribe to the ticker update completion stream."""
         logger.info("Subscribing to stream '%s' for ticker updates.", self.ticker_updates_channel)
-        self.redis_stream.subscribe(self.ticker_updates_channel, self.run_on_message)
-        time.sleep(1)  # Ensure the subscription is active before messages are published
+        self.redis_stream.subscribe(
+            self.ticker_updates_channel,
+            self.run_on_message,
+            consumer_group="market_research_group",
+            consumer_name="market_research_consumer"
+        )
         
     def run_on_message(self, message):
         """Run the Market Research Agent when a message is received."""
@@ -86,7 +90,7 @@ class MarketResearchAgent:
             # Convert prices to EUR if required
             if convert_to_eur:
                 exchange_rate = self.get_usd_to_eur_rate()
-                df[["open", "high", "low", "close"]] = df[["open", "high", "low", "close"]] * exchange_rate
+                df.loc[:, ["open", "high", "low", "close"]] = df[["open", "high", "low", "close"]] * exchange_rate
                 logger.info("Converted prices for %s to EUR using exchange rate: %.4f", asset, exchange_rate)
 
             # Calculate daily returns
@@ -101,10 +105,10 @@ class MarketResearchAgent:
     def get_usd_to_eur_rate(self):
         """Fetch the current USD to EUR exchange rate."""
         try:
-            ticker = yf.Ticker("EUR=X")  # EUR/USD exchange rate
+            ticker = yf.Ticker("EUR=X")  # USD/EUR exchange rate
             df = ticker.history(period="1d", interval="1d")
             if not df.empty:
-                exchange_rate = 1 / df["Close"].iloc[-1]  # Convert USD to EUR
+                exchange_rate = df["Close"].iloc[-1]  
                 logger.info("Fetched USD to EUR exchange rate: %.4f", exchange_rate)
                 return exchange_rate
             else:
