@@ -36,7 +36,7 @@ def test_fetch_coin50_tickers(mock_get, agent):
     mock_get.return_value = mock_response
 
     tickers = agent.fetch_coin50_tickers()
-    assert tickers == ["BTC-EUR", "ETH-EUR"]
+    assert tickers == ["BTC-USD", "ETH-USD"]
     mock_get.assert_called_once()
 
 @patch("builtins.open", new_callable=mock_open)

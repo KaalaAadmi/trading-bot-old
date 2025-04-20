@@ -4,6 +4,7 @@ import logging
 import logging.config
 import yaml
 import os
+import asyncio
 
 # Ensure the logs directory exists
 logs_dir = os.path.join(os.path.dirname(__file__), "../../logs")
@@ -50,7 +51,7 @@ class RedisStream:
 
         Args:
             stream (str): The name of the Redis Stream.
-            callback (function): A function to handle incoming messages.
+            callback (function): A function to handle incoming messages. Can be synchronous or asynchronous.
             consumer_group (str): The name of the consumer group.
             consumer_name (str): The name of the consumer within the group.
         """
@@ -66,18 +67,23 @@ class RedisStream:
                 raise
 
         def listen():
+            loop = asyncio.new_event_loop()  # Create a new event loop for the thread
+            asyncio.set_event_loop(loop)  # Set the event loop for this thread
             while True:
                 try:
                     # Read messages from the stream
                     messages = self.redis.xreadgroup(consumer_group, consumer_name, {stream: ">"}, count=1, block=0)
                     for stream_name, entries in messages:
                         for entry_id, entry_data in entries:
-                            logger.debug("Message received on stream '%s': %s", stream, entry_data)
-                            callback(entry_data)
+                            logger.info("Message received on stream '%s': %s", stream, entry_data)
+                            # Check if the callback is asynchronous
+                            if asyncio.iscoroutinefunction(callback):
+                                loop.run_until_complete(callback(entry_data))  # Run the coroutine in the thread's event loop
+                            else:
+                                callback(entry_data)  # Call the synchronous function
                             # Acknowledge the message
                             self.redis.xack(stream, consumer_group, entry_id)
                             logger.info("Acknowledged message ID '%s' on stream '%s'.", entry_id, stream)
-                            return  # Stop listening after processing one message
                 except Exception as e:
                     logger.error("Error while listening to stream '%s': %s", stream, str(e))
 

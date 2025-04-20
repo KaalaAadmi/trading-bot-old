@@ -1,6 +1,7 @@
+-- Create Extensions
+CREATE EXTENSION IF NOT EXISTS timescaledb;
 -- Create a table for OHLCV data
 CREATE TABLE IF NOT EXISTS ohlcv_data (
-    id SERIAL PRIMARY KEY,
     symbol VARCHAR(20) NOT NULL,
     timeframe VARCHAR(10) NOT NULL,
     timestamp TIMESTAMPTZ NOT NULL,
@@ -8,7 +9,8 @@ CREATE TABLE IF NOT EXISTS ohlcv_data (
     high NUMERIC NOT NULL,
     low NUMERIC NOT NULL,
     close NUMERIC NOT NULL,
-    volume NUMERIC NOT NULL
+    volume NUMERIC NOT NULL,
+    PRIMARY KEY (symbol, timestamp, timeframe)
 );
 
 -- Create a hypertable for efficient time-series queries

@@ -47,7 +47,7 @@ def test_filter_assets(agent):
     # Mock the settings to include coin50 and sp500 arrays
     agent.settings = {
         "tickers": {
-            "coin50": ["BTC-EUR", "ETH-EUR"],
+            "coin50": ["BTC-USD", "ETH-USD"],
             "sp500": ["AAPL", "MSFT"]
         },
         "agents": {
@@ -68,14 +68,14 @@ def test_filter_assets(agent):
 
     # Test data
     ohlcv_data = {
-        "BTC-EUR": pd.DataFrame(
+        "BTC-USD": pd.DataFrame(
             {
                 "open": [30000, 31000, 29000, 32000, 28000],
                 "close": [31000, 29000, 32000, 28000, 33000],
                 "volume": [6000000, 7000000, 8000000, 9000000, 10000000],  # Meets liquidity threshold
             }
         ),
-        "ETH-EUR": pd.DataFrame(
+        "ETH-USD": pd.DataFrame(
             {
                 "open": [2000, 2020, 2040, 2060, 2080],
                 "close": [2020, 2040, 2060, 2080, 2100],
@@ -93,7 +93,7 @@ def test_filter_assets(agent):
         df["daily_returns"] = (df["close"] - df["open"]) / df["open"]
 
     # Extract coin50 and sp500 tickers
-    coin50 = ["BTC-EUR", "ETH-EUR"]
+    coin50 = ["BTC-USD", "ETH-USD"]
     sp500 = ["AAPL", "MSFT"]
 
     # Run the filter_assets method
@@ -101,9 +101,9 @@ def test_filter_assets(agent):
 
     # Assertions
     assert isinstance(filtered_assets, list)
-    assert len(filtered_assets) == 1  # Only BTC-EUR should pass
-    assert "BTC-EUR" in filtered_assets
-    assert "ETH-EUR" not in filtered_assets
+    assert len(filtered_assets) == 1  # Only BTC-USD should pass
+    assert "BTC-USD" in filtered_assets
+    assert "ETH-USD" not in filtered_assets
 
 @patch("agents.market_research.market_research_agent.create_engine")
 def test_store_data(mock_engine, agent):

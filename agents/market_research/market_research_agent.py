@@ -8,7 +8,7 @@ import os
 import json
 import yfinance as yf
 import time
-
+import agents.common.utils as common
 # Initialize logger
 logger = logging.getLogger("agents.market_research")
 
@@ -30,6 +30,8 @@ class MarketResearchAgent:
         self.db_engine = create_engine(
             f"postgresql://{db_config['user']}:{db_config['password']}@{db_config['host']}:{db_config['port']}/{db_config['db']}"
         )
+        self.exchange_rate = common.get_usd_to_eur_rate()
+        
 
     def subscribe_to_ticker_updates(self):
         """Subscribe to the ticker update completion stream."""
@@ -89,9 +91,8 @@ class MarketResearchAgent:
 
             # Convert prices to EUR if required
             if convert_to_eur:
-                exchange_rate = self.get_usd_to_eur_rate()
-                df.loc[:, ["open", "high", "low", "close"]] = df[["open", "high", "low", "close"]] * exchange_rate
-                logger.info("Converted prices for %s to EUR using exchange rate: %.4f", asset, exchange_rate)
+                df.loc[:, ["open", "high", "low", "close"]] = df[["open", "high", "low", "close"]] * self.exchange_rate
+                logger.info("Converted prices for %s to EUR using exchange rate: %.4f", asset, self.exchange_rate)
 
             # Calculate daily returns
             df["daily_returns"] = (df["close"] - df["open"]) / df["open"]
@@ -102,21 +103,21 @@ class MarketResearchAgent:
             logger.error("Error fetching OHLCV for asset '%s': %s", asset, str(e))
             return None
 
-    def get_usd_to_eur_rate(self):
-        """Fetch the current USD to EUR exchange rate."""
-        try:
-            ticker = yf.Ticker("EUR=X")  # USD/EUR exchange rate
-            df = ticker.history(period="1d", interval="1d")
-            if not df.empty:
-                exchange_rate = df["Close"].iloc[-1]  
-                logger.info("Fetched USD to EUR exchange rate: %.4f", exchange_rate)
-                return exchange_rate
-            else:
-                logger.error("Failed to fetch USD to EUR exchange rate. Defaulting to 1.0.")
-                return 1.0  # Default to no conversion if rate is unavailable
-        except Exception as e:
-            logger.error("Error fetching USD to EUR exchange rate: %s", str(e))
-            return 1.0  # Default to no conversion if an error occurs
+    # def get_usd_to_eur_rate(self):
+    #     """Fetch the current USD to EUR exchange rate."""
+    #     try:
+    #         ticker = yf.Ticker("EUR=X")  # USD/EUR exchange rate
+    #         df = ticker.history(period="1d", interval="1d")
+    #         if not df.empty:
+    #             exchange_rate = df["Close"].iloc[-1]  
+    #             logger.info("Fetched USD to EUR exchange rate: %.4f", exchange_rate)
+    #             return exchange_rate
+    #         else:
+    #             logger.error("Failed to fetch USD to EUR exchange rate. Defaulting to 1.0.")
+    #             return 1.0  # Default to no conversion if rate is unavailable
+    #     except Exception as e:
+    #         logger.error("Error fetching USD to EUR exchange rate: %s", str(e))
+    #         return 1.0  # Default to no conversion if an error occurs
     
     def filter_assets(self, ohlcv_data, coin50, sp500):
         """Apply filters to identify assets with unmitigated FVGs and imbalance."""
@@ -185,8 +186,8 @@ class MarketResearchAgent:
         """Run the Market Research Agent."""
         logger.info("Starting Market Research Agent...")
         assets = self.fetch_assets()
-        coin50 = [ticker for ticker in assets if ticker.endswith("-EUR")]
-        sp500 = [ticker for ticker in assets if not ticker.endswith("-EUR")]
+        coin50 = [ticker for ticker in assets if ticker.endswith("-USD")]
+        sp500 = [ticker for ticker in assets if not ticker.endswith("-USD")]
 
         ohlcv_data = {
             asset: self.fetch_ohlcv(asset) for asset in assets

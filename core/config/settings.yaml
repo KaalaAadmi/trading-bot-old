@@ -14,6 +14,7 @@ redis:
   channels:
     ticker_updater: "ticker_updates_channel"
     market_research: "market_research_signals"
+    data_collector: "data_collector_channel" # New channel for DataCollectorAgent
     technical_analysis: "technical_analysis_signals"
     risk_manager: "risk_manager_updates"
     portfolio_manager: "portfolio_manager_signals"
@@ -57,3 +58,13 @@ agents:
 
 tickers:
   file_path: "data/tickers.json"
+
+timeframes:
+  htf: "1h"
+  ltf: "5m"
+
+history:
+  htf_lookback_days: 30
+  ltf_lookback_days: 7
+  htf_interval_minutes: 60
+  ltf_interval_minutes: 5

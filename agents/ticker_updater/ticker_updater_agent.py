@@ -43,8 +43,8 @@ class TickerUpdaterAgent:
             response.raise_for_status()
 
             data = response.json()
-            # Append "-EUR" to each symbol
-            tickers = [f"{coin['symbol'].upper()}-EUR" for coin in data]
+            # Append "-USD" to each symbol
+            tickers = [f"{coin['symbol'].upper()}-USD" for coin in data]
             logger.info("Fetched %d Coin50 tickers sorted by volume.", len(tickers))
             return tickers
         except Exception as e:

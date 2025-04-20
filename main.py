@@ -1,42 +1,42 @@
 from core.scheduler.apscheduler_config import start_scheduler
 from agents.market_research.market_research_agent import MarketResearchAgent
 from agents.ticker_updater.ticker_updater_agent import TickerUpdaterAgent
+from agents.market_data_collector.data_collector_agent import DataCollectorAgent
 import logging
-import os
-import time
+import asyncio
 
 # Initialize logger
 logging.basicConfig(level=logging.INFO)
 
-def ensure_tickers_file():
-    """Ensure that the tickers.json file exists and run the TickerUpdaterAgent."""
-    ticker_file_path = "data/tickers.json"
-    ticker_updater = TickerUpdaterAgent()
-
-    # Run the TickerUpdaterAgent regardless of whether tickers.json exists
-    if not os.path.exists(ticker_file_path):
-        logging.info("tickers.json file not found. Running TickerUpdaterAgent to generate it...")
-    else:
-        logging.info("tickers.json file exists. Running TickerUpdaterAgent to update it...")
-
-    ticker_updater.update_tickers()
-
-if __name__ == "__main__":
+async def start_agents():
+    """Start all agents in the correct order."""
     logging.info("Starting the Agentic Trading Bot...")
 
-    # Initialize the MarketResearchAgent and subscribe to ticker updates
+    # Initialize the TickerUpdaterAgent and trigger it to update tickers
+    ticker_updater_agent = TickerUpdaterAgent()
+    logging.info("Running the TickerUpdaterAgent to update tickers...")
+    ticker_updater_agent.update_tickers()
+
+    # Initialize and start the MarketResearchAgent
     market_research_agent = MarketResearchAgent()
-    market_research_agent.subscribe_to_ticker_updates()
+    market_research_agent.subscribe_to_ticker_updates()  # Call the synchronous method directly
 
-    # Ensure tickers.json is available and run the TickerUpdaterAgent
-    ensure_tickers_file()
+    # Initialize and start the DataCollectorAgent
+    data_collector_agent = DataCollectorAgent()
+    await data_collector_agent.start()
 
-    # Start the scheduler for daily execution
-    start_scheduler()
+    logging.info("[main.py] Loop ID: %s", id(asyncio.get_running_loop()))
+
+    # Start the scheduler and pass in the data_collector_agent
+    start_scheduler(data_collector_agent)
+    # start_scheduler()
 
     # Keep the application running
+    while True:
+        await asyncio.sleep(1)  # Prevent the script from exiting
+
+if __name__ == "__main__":
     try:
-        while True:
-            time.sleep(1)
+        asyncio.run(start_agents())
     except (KeyboardInterrupt, SystemExit):
         logging.info("Shutting down the Agentic Trading Bot...")
