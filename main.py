@@ -2,6 +2,7 @@ from core.scheduler.apscheduler_config import start_scheduler
 from agents.market_research.market_research_agent import MarketResearchAgent
 from agents.ticker_updater.ticker_updater_agent import TickerUpdaterAgent
 from agents.market_data_collector.data_collector_agent import DataCollectorAgent
+from agents.technical_analysis.technical_analysis_agent import TechnicalAnalysisAgent
 import logging
 import asyncio
 
@@ -25,6 +26,11 @@ async def start_agents():
     data_collector_agent = DataCollectorAgent()
     await data_collector_agent.start()
 
+    # Initialize and start the TechnicalAnalysisAgent
+    technical_analysis_agent = TechnicalAnalysisAgent()
+    await technical_analysis_agent.start()
+    
+    logging.info("All agents started successfully.")
     logging.info("[main.py] Loop ID: %s", id(asyncio.get_running_loop()))
 
     # Start the scheduler and pass in the data_collector_agent

@@ -290,11 +290,11 @@ class DataCollectorAgent:
 
         # Schedule periodic fetching of LTF and HTF data
         scheduler = AsyncIOScheduler()
-        ltf_interval = self.history["ltf_interval_minutes"]  # Use interval from settings
         htf_interval = self.history["htf_interval_minutes"]  # Use interval from settings
+        ltf_interval = self.history["ltf_interval_minutes"]  # Use interval from settings
 
-        scheduler.add_job(self.fetch_ltf_data, "interval", minutes=ltf_interval, id="ltf_fetch_job")
         scheduler.add_job(self.fetch_htf_data, "interval", minutes=htf_interval, id="htf_fetch_job")
+        scheduler.add_job(self.fetch_ltf_data, "interval", minutes=ltf_interval, id="ltf_fetch_job")
 
         scheduler.start()
         logger.info("Scheduled LTF and HTF data fetching jobs.")
@@ -307,13 +307,13 @@ class DataCollectorAgent:
 
         logger.info("Fetching live data for tracked assets: %s", self.filtered_assets)
 
-        # Fetch LTF data
-        ltf_tasks = [asyncio.create_task(self.process_ohlcv(asset, "ltf")) for asset in self.filtered_assets]
-        await asyncio.gather(*ltf_tasks)
-
         # Fetch HTF data
         htf_tasks = [asyncio.create_task(self.process_ohlcv(asset, "htf")) for asset in self.filtered_assets]
         await asyncio.gather(*htf_tasks)
+        
+        # Fetch LTF data
+        ltf_tasks = [asyncio.create_task(self.process_ohlcv(asset, "ltf")) for asset in self.filtered_assets]
+        await asyncio.gather(*ltf_tasks)
 
         logger.info("✅ Finished fetching data for %d assets. Check logs for assets with missing or partial data.", len(self.filtered_assets))
 

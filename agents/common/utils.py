@@ -3,6 +3,9 @@ import holidays
 from datetime import datetime, time
 import yfinance as yf
 import logging
+from decimal import Decimal
+import pandas as pd
+import json
 
 logger = logging.getLogger("agents.common.utils")
 
@@ -41,4 +44,36 @@ def get_usd_to_eur_rate():
     except Exception as e:
         logger.error("Error fetching USD to EUR exchange rate: %s", str(e))
         return 1.0  # Default to no conversion if an error occurs
-    
+
+def convert_decimals(obj):
+    if isinstance(obj, list):
+        return json.dumps([convert_decimals(i) for i in obj])
+        # return json.dumps(obj)
+    elif isinstance(obj, dict):
+        return {k: convert_decimals(v) for k, v in obj.items()}
+    elif isinstance(obj, Decimal):
+        return float(obj)
+    elif hasattr(obj, 'isoformat'):  # Handles pandas.Timestamp, datetime, etc.
+        return obj.isoformat()
+    elif obj is None:
+        return "null"
+    else:
+        return obj
+
+def db_fvg_to_logic_fvg(db_fvg):
+    direction = db_fvg["direction"]
+    high = float(db_fvg["high"]) if isinstance(db_fvg["high"], Decimal) else db_fvg["high"]
+    low = float(db_fvg["low"]) if isinstance(db_fvg["low"], Decimal) else db_fvg["low"]
+    return {
+        "id": db_fvg["id"],
+        "symbol": db_fvg["symbol"],
+        "timeframe": db_fvg["timeframe"],
+        "direction": direction,
+        "fvg_start": high if direction == "bullish" else low,
+        "fvg_end": low if direction == "bullish" else high,
+        "formed_at": db_fvg["formed_at"],
+        "height": float(db_fvg.get("fvg_height", 0)) if db_fvg.get("fvg_height") is not None else None,
+        "pct_of_price": float(db_fvg.get("pct_of_price", 0)) if db_fvg.get("pct_of_price") is not None else None,
+        "avg_height": float(db_fvg.get("avg_height", 0)) if db_fvg.get("avg_height") is not None else None,
+        # ...other fields as needed
+    }

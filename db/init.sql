@@ -21,10 +21,20 @@ CREATE TABLE IF NOT EXISTS tracked_fvgs (
     id SERIAL PRIMARY KEY,
     symbol VARCHAR(20) NOT NULL,
     timeframe VARCHAR(10) NOT NULL,
-    fvg_start NUMERIC NOT NULL,
-    fvg_end NUMERIC NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    mitigated BOOLEAN DEFAULT FALSE
+    direction TEXT NOT NULL,
+    high NUMERIC NOT NULL,
+    low NUMERIC NOT NULL,
+    formed_at TIMESTAMPTZ NOT NULL,
+    status TEXT NOT NULL, -- pending, filled, invalidated
+    confirmed BOOLEAN DEFAULT FALSE,
+    msb_confirmed BOOLEAN DEFAULT FALSE,
+    fvg_height NUMERIC,
+    pct_of_price NUMERIC,
+    avg_height NUMERIC,
+    inversion_time TIMESTAMPTZ,
+    signal_emitted_at TIMESTAMPTZ,
+    metadata JSONB,
+    last_checked TIMESTAMPTZ
 );
 
 -- Create a table for tracked liquidity zones
@@ -32,10 +42,32 @@ CREATE TABLE IF NOT EXISTS tracked_liquidity (
     id SERIAL PRIMARY KEY,
     symbol VARCHAR(20) NOT NULL,
     timeframe VARCHAR(10) NOT NULL,
-    liquidity_level NUMERIC NOT NULL,
-    liquidity_type VARCHAR(10) NOT NULL, -- 'buy' or 'sell'
+    type TEXT NOT NULL, -- buy-side or sell-side
+    level NUMERIC NOT NULL,
+    formed_at TIMESTAMPTZ NOT NULL,
+    tapped BOOLEAN DEFAULT FALSE,
+    tap_time TIMESTAMPTZ,
+    tapped_by_fvg_id INTEGER REFERENCES tracked_fvgs(id),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    mitigated BOOLEAN DEFAULT FALSE
+    equal_highs BOOLEAN DEFAULT FALSE,
+    metadata JSONB
+);
+
+-- Create a table for tracking technical analysis signals
+CREATE TABLE technical_analysis_signals (
+    id SERIAL PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    fvg_id INT REFERENCES tracked_fvgs(id),
+    msb_id INT,
+    liquidity_target NUMERIC,
+    stop_loss NUMERIC,
+    rr NUMERIC,
+    reason TEXT,
+    status TEXT DEFAULT 'pending', -- pending, triggered, invalidated
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- Create a table for trade journal entries
