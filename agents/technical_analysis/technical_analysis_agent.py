@@ -4,6 +4,7 @@ import json
 from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 import numpy as np
+import pandas as pd
 
 from core.config.config_loader import load_settings
 from core.redis_bus.redis_stream import RedisStream
@@ -11,9 +12,9 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.sql import text
 from agents.common.utils import convert_decimals, db_fvg_to_logic_fvg
 from agents.technical_analysis.utils.data_loader import load_ohlcv_window
-from agents.technical_analysis.logic.fvg_detector import detect_fvgs
-from agents.technical_analysis.logic.msb_detector import detect_msbs
-from agents.technical_analysis.logic.liquidity_tracker import detect_liquidity
+from agents.technical_analysis.logic.fvg_detector import detect_significant_fvgs_atr
+from agents.technical_analysis.logic.msb_detector import detect_msbs_swing
+from agents.technical_analysis.logic.liquidity_tracker import detect_liquidity_swing
 from agents.technical_analysis.utils.validation import validate_signal
 
 logger = logging.getLogger("agents.technical_analysis")
@@ -32,6 +33,7 @@ class TechnicalAnalysisAgent:
         self.history = self.settings["history"]
         self._semaphore = None  # Placeholder
         self._loop = None  # Track the loop this agent is tied to
+        # self.
 
     @property
     def semaphore(self):
@@ -60,164 +62,13 @@ class TechnicalAnalysisAgent:
         while True:
             await asyncio.sleep(1)
 
-    async def process_new_data(self, message):
-        try:
-            logger.info("Received new data event: %s", message)
-            ticker = message["ticker"]
-            
-            trade_direction=""
-            
-            # 1. Detect and persist new HTF FVGs
-            htf = self.timeframes["htf"]
-            htf_lookback = self.history["htf_lookback_days"]
-            htf_df = await load_ohlcv_window(self.db_engine, ticker, htf, htf_lookback)
-            if htf_df is None or htf_df.empty:
-                logger.warning("No HTF data for %s", ticker)
-                return
-
-            htf_fvgs = detect_fvgs(htf_df, ticker, htf)
-            await self.persist_new_fvgs(ticker, htf, htf_fvgs)
-            
-            # 2. Load LTF data
-            ltf = self.timeframes["ltf"]
-            ltf_lookback = self.history["ltf_lookback_days"]
-            ltf_df = await load_ohlcv_window(self.db_engine, ticker, ltf, ltf_lookback)
-            if ltf_df is None or ltf_df.empty:
-                logger.warning("No LTF data for %s", ticker)
-                return
-
-            # 3. Detect liquidity levels
-            liquidity = detect_liquidity(ltf_df, ticker, ltf)
-
-            # Validate liquidity levels
-            valid_liquidity = []
-            for liq in liquidity:
-                if not isinstance(liq, dict) or "level" not in liq or "type" not in liq:
-                    logger.warning("Skipping invalid liquidity: %s", liq)
-                    continue
-                if not isinstance(liq["level"], (float, int, np.float64)):
-                    continue
-                liq["level"] = float(liq["level"])
-                valid_liquidity.append(liq)
-
-            if not valid_liquidity:
-                logger.warning("No valid liquidity levels found for %s", ticker)
-                return
-            
-            liquidity = valid_liquidity
-            
-            # Check if liquidity was tapped
-            for liq in valid_liquidity:
-                ltf_after_formed = ltf_df[ltf_df["timestamp"] > liq["formed_at"]]
-                if ltf_after_formed.empty:
-                    liq.update({"tapped": False, "tap_time": None})
-                    continue
-
-                if liq["type"] == "sell-side" and ltf_after_formed["high"].max() >= liq["level"]:
-                    liq.update({"tapped": True, "tap_time": ltf_after_formed["timestamp"].iloc[-1]})
-                elif liq["type"] == "buy-side" and ltf_after_formed["low"].min() <= liq["level"]:
-                    liq.update({"tapped": True, "tap_time": ltf_after_formed["timestamp"].iloc[-1]})
-                else:
-                    liq.update({"tapped": False, "tap_time": None})
-
-            await self.persist_liquidity(ticker, ltf, valid_liquidity)
-            
-            # Process pending FVGs
-            pending_fvgs = await self.get_pending_fvgs(ticker, htf)
-            msbs = detect_msbs(ltf_df, ticker, ltf)
-            logger.info("MSBs detected: %s", msbs)
-
-            for fvg in pending_fvgs:
-                # ltf_in_fvg = ltf_df[(ltf_df["low"] < fvg["fvg_end"]) & (ltf_df["high"] > fvg["fvg_start"])]
-                # Filter LTF data within HTF FVG boundaries and after FVG formation
-                ltf_inside_fvg = ltf_df[
-                    (ltf_df["low"] >= fvg["fvg_start"]) &
-                    (ltf_df["high"] <= fvg["fvg_end"]) &
-                    (ltf_df["timestamp"] >= fvg["formed_at"])  # Ensure LTF candles are after FVG formation
-                ]
-
-                if ltf_inside_fvg.empty:
-                    logger.warning("No LTF candles inside FVG %s (%s) after its formation", fvg["id"], fvg["timeframe"])
-                    return  # Skip this FVG
-
-                for idx in ltf_inside_fvg.index:
-                    if self.is_inversion(ltf_df, idx, fvg):
-                        current_price = ltf_df["close"].iloc[idx]
-                        buffer = 0.005 * current_price
-                        candle_buffer = 10
-                        current_ts = ltf_df["timestamp"].iloc[idx]
-                        current_idx = ltf_df.index[ltf_df["timestamp"] == current_ts][0]
-                        start_idx, end_idx = max(0, current_idx - candle_buffer), min(len(ltf_df) - 1, current_idx + candle_buffer)
-                        start_ts, end_ts = ltf_df["timestamp"].iloc[start_idx], ltf_df["timestamp"].iloc[end_idx]
-
-                        msb = next(
-                            (m for m in msbs if m["direction"] != fvg["direction"] and start_ts <= m["timestamp"] <= end_ts and
-                            (fvg["fvg_start"] - buffer) <= m["level"] <= (fvg["fvg_end"] + buffer)),
-                            None
-                        )
-                        if msb:
-                            is_valid, confluences = validate_signal(fvg, msb, valid_liquidity, ltf_df, idx)
-                            if not is_valid:
-                                continue
-                            liq_target = self.get_nearest_liquidity(valid_liquidity, fvg)
-                            if not liq_target:
-                                continue
-
-                            target_price = liq_target["level"]
-                            stop_loss = self.get_stop_loss(fvg)
-                            rr = self.get_rr(ltf_df, idx, fvg, liq_target)
-                            if rr is None or rr < 1.0:
-                                continue
-                            if rr > 10.0:
-                                # --- Determine the TRADE direction (Inverse of FVG direction) ---
-                                if fvg["direction"] == "bullish":
-                                    trade_direction = "bearish" # Inverted bullish FVG -> Sell signal
-                                elif fvg["direction"] == "bearish":
-                                    trade_direction = "bullish" # Inverted bearish FVG -> Buy signal
-                                else:
-                                    # Handle unexpected FVG direction
-                                    logger.error("Invalid FVG direction '%s' found for FVG %s.", fvg.get("direction"), fvg.get('id', 'N/A'))
-                                    continue # Skip this FVG
-                                target_price = self.calculate_adjusted_target(current_price, stop_loss, trade_direction, max_rr=10.0)
-                                rr = 10.0
-
-                            signal = {
-                                "ticker": ticker,
-                                "timeframe": ltf,
-                                "direction": trade_direction.upper() if trade_direction != "" else ("bearish" if fvg["direction"] == "bullish" else "bullish"),
-                                "reason": f"Inverse FVG + MSB + {','.join(confluences)}",
-                                "fvg_id": fvg["id"],
-                                "fvg":convert_decimals(fvg),
-                                "liquidity_target": float(target_price),
-                                "stop_loss": float(stop_loss),
-                                "rr": float(rr),
-                            }
-                            await self.persist_signal(signal)
-                            self.redis_stream.publish(self.signal_channel, signal)
-                            # --- START NEW CODE ---
-                            # 1. Ensure all values within the signal are serializable (handles Decimals, Timestamps etc.)
-                            serializable_signal = convert_decimals(signal)
-
-                            # 2. Convert the entire serializable dictionary to a JSON string
-                            signal_json = json.dumps(serializable_signal)
-
-                            # 3. Publish the JSON string as the value for a specific field in the stream message
-                            #    (e.g., using a key like 'signal_data')
-                            # self.redis_stream.publish(self.signal_channel, {"signal_data": signal_json})
-                            # --- END NEW CODE ---
-                            await self.update_fvg_status(fvg["id"], "filled", ltf_df["timestamp"].iloc[idx], confluences, msb)
-                            logger.info("Published trade signal: %s", signal_json)
-                    break  # Only one signal per FVG
-        except Exception as e:
-            logger.error("Error in process_new_data: %s", str(e))
-
-
-
     # async def process_new_data(self, message):
     #     try:
     #         logger.info("Received new data event: %s", message)
     #         ticker = message["ticker"]
-
+            
+    #         trade_direction=""
+            
     #         # 1. Detect and persist new HTF FVGs
     #         htf = self.timeframes["htf"]
     #         htf_lookback = self.history["htf_lookback_days"]
@@ -225,9 +76,10 @@ class TechnicalAnalysisAgent:
     #         if htf_df is None or htf_df.empty:
     #             logger.warning("No HTF data for %s", ticker)
     #             return
-    #         htf_fvgs = detect_fvgs(htf_df, ticker, htf)
-    #         await self.persist_new_fvgs(ticker, htf, htf_fvgs)
 
+    #         htf_fvgs = detect_significant_fvgs_atr(htf_df, ticker, htf, atr_period=14, atr_multiplier=0.8, min_pct_price=0.003)
+    #         await self.persist_new_fvgs(ticker, htf, htf_fvgs)
+            
     #         # 2. Load LTF data
     #         ltf = self.timeframes["ltf"]
     #         ltf_lookback = self.history["ltf_lookback_days"]
@@ -235,191 +87,401 @@ class TechnicalAnalysisAgent:
     #         if ltf_df is None or ltf_df.empty:
     #             logger.warning("No LTF data for %s", ticker)
     #             return
-            
+
     #         # 3. Detect liquidity levels
-    #         liquidity = detect_liquidity(ltf_df, ticker, ltf)
-    #         # liquidity = [l for l in liquidity if "level" in l and "type" in l and isinstance(l["level"], (float, int, np.float64))]
-    #         logger.info("Liquidity levels: %s", liquidity)
+    #         liquidity = detect_liquidity_swing(ltf_df, ticker, ltf, swing_order=5, tolerance_factor=0.001) # Adjust params
+
     #         # Validate liquidity levels
     #         valid_liquidity = []
     #         for liq in liquidity:
-    #             if not isinstance(liq, dict):
-    #                 logger.warning("Malformed liquidity entry (not a dict): %s", liq)
-    #                 continue
-    #             if "level" not in liq or "type" not in liq:
-    #                 logger.warning("Skipping liquidity without 'level' or 'type': %s", liq)
+    #             if not isinstance(liq, dict) or "level" not in liq or "type" not in liq:
+    #                 logger.warning("Skipping invalid liquidity: %s", liq)
     #                 continue
     #             if not isinstance(liq["level"], (float, int, np.float64)):
-    #                 logger.warning("Skipping liquidity with invalid 'level' type: %s", liq)
     #                 continue
+    #             liq["level"] = float(liq["level"])
     #             valid_liquidity.append(liq)
-
-    #         # Log the validated liquidity levels
-    #         logger.info("Validated liquidity levels: %s", valid_liquidity)
 
     #         if not valid_liquidity:
     #             logger.warning("No valid liquidity levels found for %s", ticker)
     #             return
-
-    #         # Convert np.float64 to standard float
-    #         for liq in valid_liquidity:
-    #             liq["level"] = float(liq["level"])
-
-    #         # Use validated liquidity for further processing
+            
     #         liquidity = valid_liquidity
-    #         # Convert np.float64 to standard float
+            
+    #         # Check if liquidity was tapped
     #         for liq in valid_liquidity:
-    #             if not isinstance(liq, dict):
-    #                 logger.warning("Malformed liquidity entry (not a dict): %s", liq)
-    #                 continue
-    #             if "level" not in liq or "formed_at" not in liq:
-    #                 logger.warning("Skipping liquidity without level or formed_at: %s", liq)
-    #                 continue
-    #             liq["level"] = float(liq["level"])
-                
-    #         # 4. Check for tapped liquidity levels
-    #         for liq in liquidity:
-    #             if not isinstance(liq, dict):
-    #                 logger.warning("Malformed liquidity entry (not a dict): %s", liq)
-    #                 continue
-    #             if "level" not in liq or "formed_at" not in liq:
-    #                 logger.warning("Skipping liquidity without level or formed_at: %s", liq)
-    #                 continue
-    #             if "level" not in liq or "formed_at" not in liq:
-    #                 logger.warning("Skipping liquidity without level or formed_at: %s", liq)
-    #                 continue
     #             ltf_after_formed = ltf_df[ltf_df["timestamp"] > liq["formed_at"]]
     #             if ltf_after_formed.empty:
-    #                 logger.warning("No price data after formed_at for liquidity level: %s", liq)
-    #                 liq["tapped"] = False
-    #                 liq["tap_time"] = None
+    #                 liq.update({"tapped": False, "tap_time": None})
     #                 continue
 
     #             if liq["type"] == "sell-side" and ltf_after_formed["high"].max() >= liq["level"]:
-    #                 liq["tapped"] = True
-    #                 liq["tap_time"] = ltf_after_formed["timestamp"].iloc[-1]
+    #                 liq.update({"tapped": True, "tap_time": ltf_after_formed["timestamp"].iloc[-1]})
     #             elif liq["type"] == "buy-side" and ltf_after_formed["low"].min() <= liq["level"]:
-    #                 liq["tapped"] = True
-    #                 liq["tap_time"] = ltf_after_formed["timestamp"].iloc[-1]
+    #                 liq.update({"tapped": True, "tap_time": ltf_after_formed["timestamp"].iloc[-1]})
     #             else:
-    #                 liq["tapped"] = False
-    #                 liq["tap_time"] = None
+    #                 liq.update({"tapped": False, "tap_time": None})
 
-    #         await self.persist_liquidity(ticker, ltf, liquidity)
+    #         await self.persist_liquidity(ticker, ltf, valid_liquidity)
+            
+    #         # Process pending FVGs
+    #         pending_fvgs = await self.get_pending_fvgs(ticker, htf)
+    #         msbs = detect_msbs_swing(ltf_df, ticker, ltf, swing_order=5) # Adjust swing_order as needed
+    #         # logger.info("MSBs detected: %s", msbs)
 
-    #         # 5. Process pending FVGs
-    #         pending_fvgs = [fvg for fvg in await self.get_pending_fvgs(ticker, htf)]
-    #         msbs = detect_msbs(ltf_df, ticker, ltf)
-    #         logger.info("MSBs detected: %s", msbs)
     #         for fvg in pending_fvgs:
-    #             logger.info("Checking MSBs for FVG: %s", fvg)
-    #             # expiry_days = 5
-    #             # fvg_age = datetime.now(timezone.utc) - fvg["formed_at"]
-    #             # if fvg_age > timedelta(days=expiry_days):
-    #             #     await self.mark_fvg_as_expired(self.db_engine,fvg["id"])  # ← you’ll write this DB update function
-    #             #     logger.info(f"Expired FVG {fvg['id']} after {expiry_days} days.")
-    #             #     continue  # skip processing this FVG
-                
-    #             # Filter LTF data within HTF FVG boundaries
-    #             ltf_in_fvg = ltf_df[(ltf_df["low"] < fvg["fvg_end"]) & (ltf_df["high"] > fvg["fvg_start"])]
-
+    #             # ltf_in_fvg = ltf_df[(ltf_df["low"] < fvg["fvg_end"]) & (ltf_df["high"] > fvg["fvg_start"])]
+    #             # Filter LTF data within HTF FVG boundaries and after FVG formation
     #             ltf_inside_fvg = ltf_df[
-    #             (ltf_df["low"] >= fvg["fvg_start"]) & (ltf_df["high"] <= fvg["fvg_end"])
+    #                 (ltf_df["low"] >= fvg["fvg_start"]) &
+    #                 (ltf_df["high"] <= fvg["fvg_end"]) &
+    #                 (ltf_df["timestamp"] >= fvg["formed_at"])  # Ensure LTF candles are after FVG formation
     #             ]
+
     #             if ltf_inside_fvg.empty:
-    #                 logger.warning("No LTF candles inside FVG %s (%s)", fvg["symbol"], fvg["timeframe"])
-    #                 logger.warning("Skipping FVG %s due to no LTF candles", fvg["id"])
-    #                 continue  # Skip this FVG
-    #             if not liquidity:
-    #                 logger.warning("No liquidity levels for %s (%s), skipping FVG %s",
-    #                             fvg["symbol"], fvg["timeframe"], fvg["id"])
-    #                 continue
+    #                 logger.warning("No LTF candles inside FVG %s (%s) after its formation", fvg["id"], fvg["timeframe"])
+    #                 return  # Skip this FVG
+
                 
-    #             for idx in ltf_in_fvg.index:
+    #             for idx in ltf_inside_fvg.index:
     #                 if self.is_inversion(ltf_df, idx, fvg):
-    #                     # Validate MSB within FVG boundaries
     #                     current_price = ltf_df["close"].iloc[idx]
-    #                     buffer = 0.005 * current_price  # 0.2%
-    #                     candle_buffer = 10  # Number of candles to check for MSB
-
-    #                     # Get current LTF index timestamp
+    #                     buffer = 0.005 * current_price
+    #                     candle_buffer = 10
     #                     current_ts = ltf_df["timestamp"].iloc[idx]
+    #                     current_idx = ltf_df.index[ltf_df["timestamp"] == current_ts][0]
+    #                     start_idx, end_idx = max(0, current_idx - candle_buffer), min(len(ltf_df) - 1, current_idx + candle_buffer)
+    #                     start_ts, end_ts = ltf_df["timestamp"].iloc[start_idx], ltf_df["timestamp"].iloc[end_idx]
 
-    #                     # Find index of current_ts in the DataFrame
-    #                     current_idx_list = ltf_df.index[ltf_df["timestamp"] == current_ts].tolist()
-    #                     if not current_idx_list:
-    #                         logger.warning("Timestamp %s not found in LTF dataframe index.", current_ts)
-    #                         continue  # or handle gracefully
-    #                     current_idx = current_idx_list[0]
-
-    #                     # Define start and end range for MSB check
-    #                     start_idx = max(0, current_idx - candle_buffer)
-    #                     end_idx = min(len(ltf_df) - 1, current_idx + candle_buffer)
-    #                     start_ts = ltf_df["timestamp"].iloc[start_idx]
-    #                     end_ts = ltf_df["timestamp"].iloc[end_idx]
-
-    #                     # Find MSB in same direction within this time window and price range
     #                     msb = next(
-    #                         (m for m in msbs if m["direction"] != fvg["direction"]
-    #                         and start_ts <= m["timestamp"] <= end_ts
-    #                         and ((fvg["fvg_start"] - buffer) <= m["level"] <= (fvg["fvg_end"] + buffer))),
+    #                         (m for m in msbs if m["direction"] != fvg["direction"] and start_ts <= m["timestamp"] <= end_ts and
+    #                         (fvg["fvg_start"] - buffer) <= m["broken_level"] <= (fvg["fvg_end"] + buffer)),
     #                         None
     #                     )
-    #                     if not msb:
-    #                         logger.info(
-    #                             "No valid MSB found for FVG %s (%s). MSBs: %s, Start TS: %s, End TS: %s, Buffer: %s",
-    #                             fvg["symbol"], fvg["timeframe"], msbs, start_ts, end_ts, buffer
-    #                         )
     #                     if msb:
-    #                         # Validate signal with confluences
-    #                         logger.info("Valid MSB found for FVG %s (%s): %s", fvg["symbol"], fvg["timeframe"], msb)
-    #                         is_valid, confluences = validate_signal(fvg, msb, liquidity, ltf_df, idx)
-    #                         if is_valid:
-    #                             # Filter liquidity levels based on FVG position
-    #                             liq_target = self.get_nearest_liquidity(valid_liquidity, fvg)
-    #                             if not liq_target:
-    #                                 logger.warning("No liquidity target found for FVG: %s", fvg)
-    #                                 continue
+    #                         # is_valid, confluences = validate_signal(fvg, msb, valid_liquidity, ltf_df, idx)
+    #                         is_valid, confluences = validate_signal(fvg, msb, ltf_df, idx) # Removed valid_liquidity
+    #                         if not is_valid:
+    #                             continue
+    #                         liq_target = self.get_nearest_liquidity(valid_liquidity, fvg)
+    #                         if not liq_target:
+    #                             continue
 
-    #                             target_price = liq_target["level"]
-    #                             # CONFIRM WITH CHATGPT
-    #                             # target_price = liq_target["level"] if liq_target else None
-    #                             stop_loss = self.get_stop_loss(fvg)
-    #                             rr=self.get_rr(ltf_df, idx, fvg, liq_target) if self.get_rr(ltf_df, idx, fvg, liq_target) is not None else None
-    #                             if rr < 1.0:
-    #                                 logger.info("Skipping trade with too low RR: %.2f", rr)
-    #                                 continue
-    #                             elif rr > 10.0:
-    #                                 logger.info("Adjusting target to cap RR at 10 (was %.2f)", rr)
-    #                                 # stop_loss=self.get_stop_loss(fvg)
-    #                                 # Find next liquidity level closer to entry that gives RR ≈ 10
-    #                                 adjusted_target = self.calculate_adjusted_target(current_price, stop_loss, max_rr=10.0)
-    #                                 target_price = adjusted_target
-    #                                 rr = 10.0
-                                
-    #                             signal = {
-    #                                 "ticker": ticker,
-    #                                 "timeframe": ltf,
-    #                                 "direction": fvg["direction"].upper(),
-    #                                 "reason": f"Inverse FVG + MSB + {','.join(confluences)}",
-    #                                 "fvg_id": fvg["id"],
-    #                                 "liquidity_target": float(target_price) if target_price else None,
-    #                                 "stop_loss": float(stop_loss) ,
-    #                                 "rr": float(rr) ,
-    #                             }
-    #                             await self.persist_signal(signal)
-    #                             self.redis_stream.publish(self.signal_channel, signal)
-    #                             await self.update_fvg_status(fvg["id"], "filled", ltf_df["timestamp"].iloc[idx], confluences, msb)
-    #                             logger.info("Published trade signal: %s", signal)
-    #                     else:
-    #                         logger.info(
-    #                             "Skipping FVG %s (%s) because no valid MSB was found nearby. Formed at %s.",
-    #                             fvg["symbol"], fvg["timeframe"], fvg["formed_at"]
-    #                         )
-    #                         continue
-    #                     break  # Only one signal per FVG per run
+    #                         target_price = liq_target["level"]
+    #                         stop_loss = self.get_stop_loss(fvg)
+    #                         rr = self.get_rr(ltf_df, idx, fvg, liq_target)
+                            
+    #                         # --- Determine the TRADE direction (Inverse of FVG direction) ---
+    #                         if fvg["direction"] == "bullish":
+    #                             trade_direction = "bearish" # Inverted bullish FVG -> Sell signal
+    #                         elif fvg["direction"] == "bearish":
+    #                             trade_direction = "bullish" # Inverted bearish FVG -> Buy signal
+    #                         else:
+    #                             # Handle unexpected FVG direction
+    #                             logger.error("Invalid FVG direction '%s' found for FVG %s.", fvg.get("direction"), fvg.get('id', 'N/A'))
+    #                             continue # Skip this FVG
+                            
+    #                         if rr is None or rr < 1.0:
+    #                             continue
+    #                         if rr > 10.0:
+    #                             target_price = self.calculate_adjusted_target(current_price, stop_loss, fvg["direction"], max_rr=10.0)
+    #                             rr = 10.0
+
+    #                         signal = {
+    #                             "ticker": ticker,
+    #                             "timeframe": ltf,
+    #                             "direction": trade_direction.upper() if trade_direction != "" else ("bearish" if fvg["direction"] == "bullish" else "bullish"),
+    #                             "reason": f"Inverse FVG + MSB + {','.join(confluences)}",
+    #                             "fvg_id": fvg["id"],
+    #                             # "fvg":convert_decimals(fvg),
+    #                             "liquidity_target": float(target_price),
+    #                             "stop_loss": float(stop_loss),
+    #                             "rr": float(rr),
+    #                         }
+    #                         await self.persist_signal(signal,msb)
+    #                         logger.info(f"Signal persisted to DB for FVG ID {fvg['id']}.") # Log DB success distinctly
+    #                         self.redis_stream.publish(self.signal_channel, signal) 
+    #                         await self.update_fvg_status(fvg["id"], "filled", ltf_df["timestamp"].iloc[idx], confluences, msb)
+    #                         logger.info("Published trade signal: %s", signal)
+    #                 break  # Only one signal per FVG
     #     except Exception as e:
     #         logger.error("Error in process_new_data: %s", str(e))
+
+    async def _load_and_prepare_data(self, ticker):
+        """Loads HTF/LTF data and detects base features (FVG, Liquidity, MSB)."""
+        htf = self.timeframes["htf"]
+        htf_lookback = self.history["htf_lookback_days"]
+        htf_df = await load_ohlcv_window(self.db_engine, ticker, htf, htf_lookback)
+        if htf_df is None or htf_df.empty:
+            logger.warning(f"[{ticker}] No HTF data loaded.")
+            return None, None, None, None
+
+        # Detect and persist HTF FVGs
+        htf_fvgs = detect_significant_fvgs_atr(htf_df, ticker, htf, atr_period=14, atr_multiplier=0.8, min_pct_price=0.003)
+        await self.persist_new_fvgs(ticker, htf, htf_fvgs) # Assuming this handles duplicates
+
+        ltf = self.timeframes["ltf"]
+        ltf_lookback = self.history["ltf_lookback_days"]
+        ltf_df = await load_ohlcv_window(self.db_engine, ticker, ltf, ltf_lookback)
+        if ltf_df is None or ltf_df.empty:
+            logger.warning(f"[{ticker}] No LTF data loaded.")
+            return htf_df, None, None, None # Return htf_df just in case
+
+        # Detect LTF features
+        liquidity = detect_liquidity_swing(ltf_df, ticker, ltf, swing_order=5) # Using new detector
+        msbs = detect_msbs_swing(ltf_df, ticker, ltf, swing_order=5) # Using new detector
+
+        # Validate and check taps for liquidity (can also be a separate method)
+        valid_liquidity = []
+        for liq in liquidity:
+            # Basic validation
+            if isinstance(liq, dict) and isinstance(liq.get("level"), (float, int)):
+                 valid_liquidity.append(liq)
+            else:
+                 logger.warning(f"[{ticker}] Skipping invalid liquidity format: {liq}")
+        # Check taps
+        for liq in valid_liquidity:
+            ltf_after = ltf_df[ltf_df["timestamp"] > liq["formed_at"]]
+            tapped = False
+            tap_time = None
+            if not ltf_after.empty:
+                 if liq["type"] == "sell-side" and ltf_after["high"].max() >= liq["level"]:
+                     tapped = True; tap_time = ltf_after["timestamp"].iloc[-1]
+                 elif liq["type"] == "buy-side" and ltf_after["low"].min() <= liq["level"]:
+                     tapped = True; tap_time = ltf_after["timestamp"].iloc[-1]
+            liq.update({"tapped": tapped, "tap_time": tap_time})
+        await self.persist_liquidity(ticker, ltf, valid_liquidity) # Persist liquidity state
+
+
+        return htf_df, ltf_df, valid_liquidity, msbs, htf_fvgs
+
+
+    def _find_confirming_msb(self, fvg, msbs, ltf_df, inversion_idx):
+        """Checks for a valid MSB near the inversion point."""
+        current_price = ltf_df["close"].iloc[inversion_idx]
+        buffer = 0.005 * current_price # Buffer around FVG for MSB level check
+        candle_buffer = 10 # Look N candles before/after inversion for MSB timestamp
+
+        current_ts = ltf_df["timestamp"].iloc[inversion_idx]
+        # Find index in original df (safer than assuming iloc matches index directly if df was filtered)
+        current_loc_idx = ltf_df.index.get_loc(inversion_idx) if isinstance(inversion_idx, pd.Timestamp) else inversion_idx
+
+        start_loc_idx = max(0, current_loc_idx - candle_buffer)
+        end_loc_idx = min(len(ltf_df) - 1, current_loc_idx + candle_buffer)
+        start_ts = ltf_df["timestamp"].iloc[start_loc_idx]
+        end_ts = ltf_df["timestamp"].iloc[end_loc_idx]
+
+        # Trade direction is inverse of FVG direction
+        required_msb_direction = "bearish" if fvg["direction"] == "bullish" else "bullish"
+
+        for m in msbs:
+            # Check 1: Direction must match required trade direction
+            if m["direction"] != required_msb_direction:
+                continue
+            # Check 2: Timestamp must be within the buffer window around inversion
+            if not (start_ts <= m["timestamp"] <= end_ts):
+                continue
+            # Check 3: The broken level must be within the original FVG's range (+ buffer)
+            # Using m["broken_level"] from the new MSB detector
+            if not ((fvg["fvg_start"] - buffer) <= m["broken_level"] <= (fvg["fvg_end"] + buffer)):
+                 continue
+
+            # If all checks pass, this is the confirming MSB
+            return m
+
+        return None # No confirming MSB found
+
+
+    def _calculate_trade_parameters(self, fvg, liq_target, ltf_df, inversion_idx, trade_direction, max_rr_cap=10.0):
+        """Calculates entry, stop, target, and RR, applying capping."""
+        entry_price = ltf_df["close"].iloc[inversion_idx]
+        stop_loss = self.get_stop_loss(fvg) # Uses existing method
+
+        if not liq_target or not isinstance(liq_target.get("level"), (float, int)):
+             logger.warning(f"Invalid or missing liquidity target for FVG {fvg.get('id')}")
+             return None # Cannot calculate params
+
+        initial_target_price = liq_target["level"]
+
+        # Calculate initial RR
+        risk = abs(entry_price - stop_loss)
+        if risk <= 1e-9: # Check for zero or near-zero risk
+             logger.warning(f"Risk is zero or negligible for FVG {fvg.get('id')}. Entry={entry_price}, SL={stop_loss}")
+             return None
+        reward = abs(initial_target_price - entry_price)
+        initial_rr = round(reward / risk, 2)
+
+        if initial_rr < 1.0:
+             logger.info(f"Initial RR {initial_rr:.2f} < 1.0 for FVG {fvg.get('id')}. Skipping.")
+             return None # RR too low
+
+        # Apply RR capping
+        final_target_price = initial_target_price
+        final_rr = initial_rr
+        if initial_rr > max_rr_cap:
+             logger.info(f"RR {initial_rr:.2f} exceeds {max_rr_cap}. Adjusting target for FVG {fvg.get('id')}...")
+             # Use static method, passing TRADE direction
+             adjusted_target = TechnicalAnalysisAgent.calculate_adjusted_target(
+                 entry_price,
+                 stop_loss,
+                 trade_direction, # Pass the actual trade direction
+                 max_rr=max_rr_cap
+             )
+             if adjusted_target is not None:
+                 final_target_price = adjusted_target
+                 final_rr = max_rr_cap
+                 logger.info(f"Target adjusted to {final_target_price:.5f} for RR {final_rr:.2f}")
+             else:
+                 logger.warning(f"Could not calculate adjusted target for FVG {fvg.get('id')}. Skipping.")
+                 return None # Adjustment failed
+
+        # Final sanity check on target price vs entry
+        if (trade_direction == "bullish" and final_target_price <= entry_price) or \
+           (trade_direction == "bearish" and final_target_price >= entry_price):
+            logger.warning(f"Final target price {final_target_price:.5f} invalid relative to entry {entry_price:.5f} for {trade_direction} trade. Skipping FVG {fvg.get('id')}.")
+            return None
+
+        return {
+            "entry_price": float(entry_price),
+            "stop_loss": float(stop_loss),
+            "target_price": float(final_target_price),
+            "rr": float(final_rr)
+        }
+
+    # --- Make calculate_adjusted_target static ---
+    @staticmethod
+    def calculate_adjusted_target(entry_price, stop_loss, trade_direction, max_rr=10.0):
+        """Calculates a target price for a given RR based on trade direction."""
+        # Removed internal direction flip - expects TRADE direction now
+        if trade_direction not in ["bullish", "bearish"]:
+            logger.error(f"Invalid trade_direction '{trade_direction}' passed to calculate_adjusted_target.")
+            return None
+
+        risk = abs(entry_price - stop_loss)
+        if risk <= 1e-9: # Avoid division by zero or weird results
+             logger.warning("Adjusted target calculation failed: Risk is zero or negligible.")
+             return None
+
+        adjusted_distance = risk * max_rr
+        if trade_direction == "bullish":
+            return entry_price + adjusted_distance
+        else: # Bearish
+            return entry_price - adjusted_distance
+
+    # --- Main Orchestration Method ---
+    async def process_new_data(self, message):
+        """Orchestrates the technical analysis process."""
+        try:
+            logger.info("Received new data event: %s", message)
+            ticker = message["ticker"]
+
+            # Step 1: Load data and detect base features
+            htf_df, ltf_df, valid_liquidity, msbs, _ = await self._load_and_prepare_data(ticker)
+            if ltf_df is None or ltf_df.empty:
+                return # Exit if essential data is missing
+
+            if not valid_liquidity:
+                 logger.info(f"[{ticker}] No valid liquidity found. Skipping FVG checks.")
+                 return
+            if not msbs:
+                 logger.info(f"[{ticker}] No MSBs detected by swing point analysis. Skipping FVG checks.")
+                 # return # Decide if you want to exit if no MSBs at all
+
+            # Step 2: Get pending FVGs
+            pending_fvgs = await self.get_pending_fvgs(ticker, self.timeframes["htf"])
+            if not pending_fvgs:
+                 logger.info(f"[{ticker}] No pending FVGs found.")
+                 return
+
+            # Step 3: Process each pending FVG
+            for fvg in pending_fvgs:
+                processed_signal = False # Flag to ensure only one signal per FVG per run
+
+                # Find LTF candles formed *after* the FVG was formed
+                ltf_after_fvg = ltf_df[ltf_df["timestamp"] >= fvg["formed_at"]]
+                if ltf_after_fvg.empty:
+                     # logger.debug(f"[{ticker}] No LTF candles after FVG {fvg['id']} formed at {fvg['formed_at']}.")
+                     continue # Skip FVG if no relevant LTF data
+
+                # Iterate through relevant LTF candles to check for inversion
+                # Check only recent candles maybe? e.g., last 100? ltf_after_fvg.tail(100).index
+                for idx in ltf_after_fvg.index:
+                    if self.is_inversion(ltf_df, idx, fvg): # Use original DataFrame for lookup by index 'idx'
+                        # logger.info(f"[{ticker}] Inversion detected for FVG {fvg['id']} at index {idx} (TS: {ltf_df.loc[idx, 'timestamp']})")
+
+                        # Step 3a: Find confirming MSB
+                        confirming_msb = self._find_confirming_msb(fvg, msbs, ltf_df, idx)
+                        if not confirming_msb:
+                            # logger.info(f"[{ticker}] No confirming MSB found near inversion for FVG {fvg['id']}.")
+                            continue # Keep checking other inversion candles for this FVG
+
+                        logger.info(f"[{ticker}] Confirming MSB found for FVG {fvg['id']}: {confirming_msb}")
+
+                        # Step 3b: Validate signal based on confluences
+                        # Pass the index of the *inversion* candle for validation checks
+                        is_valid, confluences = validate_signal(fvg, confirming_msb, ltf_df, idx)
+                        if not is_valid:
+                             logger.info(f"[{ticker}] Signal validation failed for FVG {fvg['id']} ({confluences}).")
+                             continue # Keep checking other inversion candles
+
+                        # Step 3c: Find liquidity target
+                        # Trade direction based on inverse logic
+                        trade_direction = "bearish" if fvg["direction"] == "bullish" else "bullish"
+                        # Filter liquidity based on required type for the trade
+                        required_liq_type = "buy-side" if trade_direction == "bearish" else "sell-side"
+                        potential_targets = [
+                            l for l in valid_liquidity
+                            if l.get("type") == required_liq_type and not l.get("tapped")
+                        ]
+                        if not potential_targets:
+                             logger.warning(f"[{ticker}] No suitable UNTAPPED liquidity targets ({required_liq_type}) found for FVG {fvg['id']}.")
+                             continue # Stop processing this inversion if no target
+
+                        # Find nearest valid target
+                        entry_price_for_targeting = ltf_df["close"].iloc[idx]
+                        liq_target = min(potential_targets, key=lambda l: abs(l["level"] - entry_price_for_targeting))
+                        logger.info(f"[{ticker}] Selected liquidity target for FVG {fvg['id']}: {liq_target}")
+
+
+                        # Step 3d: Calculate trade parameters (Entry, SL, TP, RR with capping)
+                        trade_params = self._calculate_trade_parameters(fvg, liq_target, ltf_df, idx, trade_direction)
+                        if not trade_params:
+                             logger.warning(f"[{ticker}] Failed to calculate valid trade parameters for FVG {fvg['id']}. Skipping this setup.")
+                             continue # Stop processing this inversion if params invalid
+
+                        # Step 3e: Construct and emit signal
+                        signal = {
+                            "ticker": ticker,
+                            "timeframe": self.timeframes["ltf"],
+                            "direction": trade_direction.upper(),
+                            "fvg_direction": fvg["direction"].upper(),
+                            "reason": f"Inverse FVG + MSB + {','.join(confluences)}",
+                            "fvg_id": fvg["id"],
+                            "entry_price": trade_params["entry_price"],
+                            "liquidity_target": trade_params["target_price"],
+                            "stop_loss": trade_params["stop_loss"],
+                            "rr": trade_params["rr"],
+                        }
+
+                        await self.persist_signal(signal, confirming_msb) # Pass MSB info
+                        # Ensure data is JSON serializable for Redis
+                        self.redis_stream.publish(self.signal_channel, convert_decimals(signal))
+                        # Update FVG status in DB
+                        await self.update_fvg_status(fvg["id"], "filled", ltf_df["timestamp"].iloc[idx], confluences, confirming_msb)
+
+                        logger.info(f"[{ticker}] Published trade signal for FVG {fvg['id']}: {signal}")
+                        logger.info(f"[{ticker}] FVG {fvg} processed successfully. Signal emitted.")
+                        processed_signal = True
+                        break # ---> IMPORTANT: Break from inner loop (LTF candles) after finding the FIRST valid signal for this FVG
+
+                if processed_signal:
+                     # Optionally break from outer loop (FVGs) if you only want one signal per ticker per run
+                     # break # <-- Uncomment if desired
+                     pass # Continue to check next FVG
+
+        except Exception as e:
+            logger.exception(f"Critical error in process_new_data: {e}") # Use logger.exception
+
 
     async def persist_new_fvgs(self, symbol, timeframe, fvgs):
         async with self.db_engine.begin() as conn:
@@ -525,9 +587,10 @@ class TechnicalAnalysisAgent:
             # for k, v in metadata.items():
             #     logger.info("Metadata key: %s, value: %s (%s)", k, v, type(v))
 
-    async def persist_signal(self, signal):
+    async def persist_signal(self, signal_data, msb_info): # Add msb_info argument
+        """ Persists the generated signal, linking the confirming MSB """
         async with self.db_engine.begin() as conn:
-            # Check if the signal already exists
+            # Check if the signal already exists based on FVG ID and pending status
             result = await conn.execute(
                 text("""
                     SELECT id FROM technical_analysis_signals
@@ -535,53 +598,59 @@ class TechnicalAnalysisAgent:
                       AND status='pending'
                 """),
                 {
-                    "symbol": signal["ticker"],
-                    "timeframe": signal["timeframe"],
-                    "fvg_id": signal["fvg_id"]
+                    "symbol": signal_data["ticker"],
+                    "timeframe": signal_data["timeframe"],
+                    "fvg_id": signal_data["fvg_id"]
                 }
             )
             existing_signal = result.fetchone()
 
+            # Prepare common data, ensuring MSB info is included
+            params = {
+                "symbol": signal_data["ticker"],
+                "timeframe": signal_data["timeframe"],
+                "direction": signal_data["direction"],
+                "fvg_id": signal_data["fvg_id"],
+                "liquidity_target": signal_data["liquidity_target"],
+                "stop_loss": signal_data["stop_loss"],
+                "rr": signal_data["rr"],
+                "reason": signal_data["reason"],
+                # Extract MSB info - use defaults if keys are missing in msb_info
+                "msb_broken_level": msb_info.get("broken_level"), # Using broken_level from new MSB detector
+                "msb_timestamp": msb_info.get("broken_level_ts") # Using timestamp of the broken swing point
+            }
+
             if existing_signal:
                 # Update the existing signal
+                params["id"] = existing_signal["id"]
                 await conn.execute(
                     text("""
                         UPDATE technical_analysis_signals
                         SET direction=:direction, liquidity_target=:liquidity_target,
                             stop_loss=:stop_loss, rr=:rr, reason=:reason,
+                            msb_broken_level=:msb_broken_level, msb_timestamp=:msb_timestamp, -- Add MSB fields
                             updated_at=NOW()
                         WHERE id=:id
                     """),
-                    {
-                        "id": existing_signal["id"],
-                        "direction": signal["direction"],
-                        "liquidity_target": signal["liquidity_target"],
-                        "stop_loss": signal["stop_loss"],
-                        "rr": signal["rr"],
-                        "reason": signal["reason"]
-                    }
+                    params
                 )
+                logger.info(f"Updated existing signal ID {existing_signal['id']} with MSB {params['msb_broken_level']} @ {params['msb_timestamp']}")
             else:
                 # Insert a new signal
+                params["status"] = 'pending' # Add status for insert
                 await conn.execute(
                     text("""
                         INSERT INTO technical_analysis_signals
                         (symbol, timeframe, direction, fvg_id, liquidity_target,
-                         stop_loss, rr, reason, status)
+                         stop_loss, rr, reason, status, msb_broken_level, msb_timestamp) -- Add MSB fields
                         VALUES (:symbol, :timeframe, :direction, :fvg_id,
-                                :liquidity_target, :stop_loss, :rr, :reason, 'pending')
+                                :liquidity_target, :stop_loss, :rr, :reason, :status,
+                                :msb_broken_level, :msb_timestamp) -- Add MSB fields
                     """),
-                    {
-                        "symbol": signal["ticker"],
-                        "timeframe": signal["timeframe"],
-                        "direction": signal["direction"],
-                        "fvg_id": signal["fvg_id"],
-                        "liquidity_target": signal["liquidity_target"],
-                        "stop_loss": signal["stop_loss"],
-                        "rr": signal["rr"],
-                        "reason": signal["reason"]
-                    }
+                    params
                 )
+                logger.info(f"Inserted new signal for FVG {params['fvg_id']} with MSB {params['msb_broken_level']} @ {params['msb_timestamp']}")
+
 
     def is_inversion(self, ltf_df, idx, fvg):
         direction = fvg["direction"]
@@ -659,11 +728,16 @@ class TechnicalAnalysisAgent:
                 {"fvg_id": fvg_id}
             )
     # @staticmethod
-    def calculate_adjusted_target(self,entry_price, stop_loss, direction, max_rr=10.0):
-        risk = abs(entry_price - stop_loss)
-        adjusted_distance = risk * max_rr
-        if direction == "bullish":
-            return entry_price + adjusted_distance
-        else:
-            return entry_price - adjusted_distance
+    # def calculate_adjusted_target(self,entry_price, stop_loss, direction, max_rr=10.0):
+    #     trade_direction=""
+    #     if direction=="bullish":
+    #         trade_direction="bearish"
+    #     elif direction=="bearish":
+    #         trade_direction="bullish"
+    #     risk = abs(entry_price - stop_loss)
+    #     adjusted_distance = risk * max_rr
+    #     if trade_direction == "bullish":
+    #         return entry_price + adjusted_distance
+    #     else:
+    #         return entry_price - adjusted_distance
 

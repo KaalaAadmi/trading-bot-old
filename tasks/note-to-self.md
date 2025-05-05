@@ -1,5 +1,6 @@
 NOTE TO SELF:
 
+- [ ] The time at which the code is run, the ltf data is being fetched from that time, meaning, if I run the code for the first time at 10:32am, then the next run for the ltf data fetching is being done at 10:37am whereas it should be fetched at 10:35am. So, can we check the current time and then run it accordingly for ltf at the correct time for the first run and later it should run like it is? Or should we run the initial run when we are running the code, and the subsequent runs should be at clock time? For htf, I prefer it to be the 2nd option.
 - [ ] Increase the data for storing(loopback_days) {change in `settings.yaml` for `data_collector_agent`}
 - [ ] Filter more strictly. Way too lenient now. {change in `market_research_agent.py` for `market_research_agent`}
 - [ ] Take input of the country where the user will trade and set it as a setting in `settings.yaml`
