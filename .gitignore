@@ -3,3 +3,8 @@
 ./pytest_cache/
 ./tasks/queries.md
 ./logs/system.log
+.DS_Store
+./tasks/queries.md
+logs/system.log
+/venv
+tasks/queries.md

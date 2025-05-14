@@ -71,9 +71,9 @@ agents:
       crypto: 10000000 # $10M/day
     volatility_threshold: 0.02 # 2% daily volatility
     price_change_threshold: 0.02 # ±2% price change in the last 5 days
-  min_price:
-    stocks: 1 # $1
-    crypto: 0.05 # $0.05
+    min_price:
+      stocks: 1 # $1
+      crypto: 0.05 # $0.05
   technical_analysis:
     enabled: true
   risk_manager:
