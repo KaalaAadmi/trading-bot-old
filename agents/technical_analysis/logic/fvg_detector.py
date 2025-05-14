@@ -121,6 +121,7 @@ def detect_significant_fvgs_atr(df, symbol, timeframe, atr_period=14, atr_multip
                     # Use original start/end based on direction for consistency with your agent logic
                     "fvg_start": n1["high"] if direction == "bullish" else n3["high"],
                     "fvg_end": n3["low"] if direction == "bullish" else n1["low"],
+                    "fvg_height": fvg_height,
                     "formed_at": n2["timestamp"], # Timestamp of candle n2
                     "height": fvg_height, # Absolute height
                     "pct_of_price": pct_of_price,

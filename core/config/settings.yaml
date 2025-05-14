@@ -11,17 +11,28 @@ redis:
   host: ${REDIS_HOST}
   port: ${REDIS_PORT}
   db: ${REDIS_DB}
-  channels:
-    ticker_updater: "ticker_updates_channel"
-    market_research: "market_research_signals"
-    data_collector: "data_collector_channel" # New channel for DataCollectorAgent
-    technical_analysis: "technical_analysis_signals"
-    risk_manager: "risk_manager_updates"
-    portfolio_manager: "portfolio_manager_signals"
-    fvg_tracker: "fvg_tracker_updates"
-    journaling: "journaling_updates"
-    performance: "performance_metrics"
-    notification: "notification_alerts"
+
+channels:
+  ticker_updater: "ticker_updates_channel"
+  market_research: "market_research_signals"
+  data_collector: "data_collector_channel" # New channel for DataCollectorAgent
+  technical_analysis: "technical_analysis_signals"
+  execution_orders: "execution_orders_channel" # <-- ADD THIS LINE
+  execution_results: "execution_results_channel" # Add this
+  position_updates: "position_updates_channel"
+  risk_manager: "risk_manager_updates"
+  portfolio_manager: "portfolio_manager_signals"
+  fvg_tracker: "fvg_tracker_updates"
+  journaling: "journaling_updates"
+  performance: "performance_metrics"
+  notification: "notification_alerts"
+  performance_updates: "performance_updates_channel"
+
+position_tracker:
+  monitor_interval: 60 # Interval (in seconds) to check open positions
+
+performance_measurer:
+  interval_seconds: 3600 # Interval (in seconds) to calculate performance metrics
 
 # Prometheus Configuration
 prometheus:
@@ -29,6 +40,7 @@ prometheus:
   port: ${PROMETHEUS_PORT}
 
 # Grafana Configuration
+
 grafana:
   host: ${GRAFANA_HOST}
   port: ${GRAFANA_PORT}
@@ -36,6 +48,19 @@ grafana:
 # Logging Configuration
 logging:
   level: ${LOG_LEVEL}
+
+# General Application Settings
+environment: ${ENVIRONMENT:-development} # <-- ENSURE THIS EXISTS (or similar)
+# development -> backtesting
+# live -> testing in live market(all of the signals, for data)
+# live_functional -> testing in live market (with the ConfidenceProviderAgent, and correct implementation of PortfolioManagerAgent)
+# production -> executes trades in the live market
+
+# Portfolio Configuration
+portfolio:
+  initial_balance: 10000.0 # Example
+  max_risk_per_trade_pct: 0.01 # 1% risk per trade (used in production mode)
+  dev_position_size_usd: 100.0 # <-- ADD THIS LINE (Fixed USD size for dev mode)
 
 # Other Configuration
 agents:
@@ -46,9 +71,9 @@ agents:
       crypto: 10000000 # $10M/day
     volatility_threshold: 0.02 # 2% daily volatility
     price_change_threshold: 0.02 # ±2% price change in the last 5 days
-    min_price:
-      stocks: 1 # $1
-      crypto: 0.05 # $0.05
+  min_price:
+    stocks: 1 # $1
+    crypto: 0.05 # $0.05
   technical_analysis:
     enabled: true
   risk_manager:

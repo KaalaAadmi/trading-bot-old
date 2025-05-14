@@ -11,11 +11,9 @@ def load_settings(settings_path=None):
         settings_path = os.path.join(os.path.dirname(__file__), "settings.yaml")
     with open(settings_path, "r") as file:
         settings = yaml.safe_load(file)
-
     # Replace placeholders with environment variables
     for key, value in os.environ.items():
         settings = replace_placeholders(settings, key, value)
-
     return settings
 
 def replace_placeholders(config, key, value):
