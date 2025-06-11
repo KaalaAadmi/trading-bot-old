@@ -131,8 +131,8 @@ Currently, agents are rule-based but designed in a way that future ML/AI modules
 ```mermaid
 graph TD
 A[update_ticker_agent] -->|Fetches fresh universe| B[tickers.json]
-B --> C[Market Research Agent] -->|Market Data Stored in TimescaleDB| D[Data Collector Agent]
-D --> E[Technical Analysis Agent]
+B --> C[Market Research Agent] --> D[Data Collector Agent]
+D -->|Market Data Stored in TimescaleDB| E[Technical Analysis Agent]
 E --> F[FVG & Liquidity Tracker]
 F --> G[Risk Manager Agent]
 G --> H[Portfolio Manager Agent]
